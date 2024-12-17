@@ -1,2 +1,2 @@
-# nysadmm
+# Nystrom ADMM
 NysADMM NLA project
