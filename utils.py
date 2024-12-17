@@ -1,6 +1,4 @@
 import numpy as np
-import matplotlib.pyplot as plt
-from math import sqrt, log
 from sklearn.metrics import mean_squared_error as mse 
 from scipy.linalg import cholesky, svd, solve_triangular
 from time import time
@@ -8,35 +6,49 @@ from time import time
 
 
 def Sthresh(x, gamma):
+    """Calculates soft thresholding"""
     return np.sign(x)*np.maximum(0, np.absolute(x)-gamma/2.0)
 
-def ADMM(A, y, A_test=None, y_test=None, MAX_ITER = 100_000):
-    lossses = []
-    m, n = A.shape
-    w, v = np.linalg.eig(A.T.dot(A))
-    
 
-    "Function to caluculate min 1/2(y - Ax) + l||x||"
-    "via alternating direction methods"
+def ADMM(A, y, A_test=None, y_test=None, MAX_ITER = 100_000):
+    """
+    Calculates ADMM. 
+    In:
+    A: np.array -- feature matrix
+    y: np.array -- response
+    A_test, y_test -- feature matrix and response for testing
+    MAX_ITER -- number of iterations
+
+    Returns:
+    zhat -- solution of minimization problem
+    rho -- step size
+    l -- regularization coefficient
+    losses -- list of MSE values for each iteration. If A_test=None, losses are for MSE(A@x, y)
+                else, losses are MSE(A_test@x, y_test)
+    times -- list of time values for each iteration
+    """
+    lossses = []
+    _, n = A.shape
+    w, _ = np.linalg.eig(A.T.dot(A))
+    
     xhat = np.zeros([n, 1])
     zhat = np.zeros([n, 1])
     u = np.zeros([n, 1])
 
-    "Calculate regression co-efficient and stepsize"
-    l = sqrt(2*log(n, 10))
+    "Calculate regression coefficient and stepsize"
+    l = np.sqrt(2*np.log10(n))
     rho = 1/(np.amax(np.absolute(w)))
 
-    "Pre-compute to save some multiplications"
+
     AtA = A.T.dot(A)
     Aty = A.T.dot(y)
     Q = AtA + rho*np.identity(n)
     Q = np.linalg.inv(Q)
 
-    i = 0
     times = []
     curr_time = 0
 
-    while(i < MAX_ITER):
+    for _ in range(MAX_ITER):
         t0 = time()
         "x minimisation step via posterier OLS"
         xhat = Q.dot(Aty + rho*(zhat - u))
@@ -47,7 +59,6 @@ def ADMM(A, y, A_test=None, y_test=None, MAX_ITER = 100_000):
         "mulitplier update"
         u += xhat - zhat
 
-        i += 1
         if A_test is not None:
             lossses.append(mse(y_test, A_test@zhat))
         else:
@@ -55,28 +66,35 @@ def ADMM(A, y, A_test=None, y_test=None, MAX_ITER = 100_000):
         t1 = time()
         times.append(curr_time + t1 - t0)
         curr_time = times[-1]
+
     return zhat, rho, l, lossses, times
 
 
 epsilon = lambda x: 1 / (1 + x ** 7)
-def is_pos_def(x):
-    return np.all(np.linalg.eigvals(x) > 0)
+
 
 def nystrom_approximation(H, s, eps=epsilon):
-    print(is_pos_def(H))
+    """
+    H: np.array -- SPD matrix
+    s: int -- sketch size
+    eps: shift
+
+    returns:
+    U, S, such that H \\approx U@S@U.T 
+    """
     d = H.shape[0]
     Omega = np.random.normal(0, 1, (d, s)) # Gaussian test matrix
     Omega, _ = np.linalg.qr(Omega, mode='reduced')
     Y = H @ Omega
     nu = eps(np.linalg.norm(Y, 2))
     Y_nu = Y + nu * Omega
-    print(is_pos_def(Omega.T @ Y_nu))
     C = cholesky(Omega.T @ Y_nu)
     B = solve_triangular(C, Y_nu.T, lower=False, trans='T').T 
     U, Sigma, _ = svd(B, full_matrices=False)
     Id = np.ones(Sigma.shape)
     lambda_prime = np.maximum(0, Sigma ** 2 - nu * Id)
     return U, np.diag(lambda_prime)
+
 
 # from lecture
 def accurate_randomized_svd(A, rank, p, q):
@@ -97,12 +115,16 @@ def accurate_randomized_svd(A, rank, p, q):
 
 eps_k = lambda k: 1 / (1 + k**2)
 
+
 def inverse_diagonal_matrix(D):
+    """Performs diagonal matrix inversion"""
     diagonal_elements = D.diagonal()
     D_inv = np.diag(1 / diagonal_elements)
     return D_inv
 
+
 def get_preconditioner_inv(U, S, s, ro):
+    """Calculates preconditioner P^{-1}"""
     diag_elements = S.diagonal()
     lambda_s = diag_elements[-1]
     I = np.eye(S.shape[0])
@@ -111,9 +133,23 @@ def get_preconditioner_inv(U, S, s, ro):
     P_inv = (lambda_s + ro) * U @ D_inv @ U.T + (np.eye(U.shape[0]) - U @ U.T)
     return P_inv
 
+
 def nystrom_pcg(H, U, S, r, x0, ro=0.01, s=50, epsilon=0.05):
-    #U, S = nystrom_approximation(H, s)
-    
+    """
+    Performs Nystrom Preconitioned Conjugate Gradients algorithm
+
+    H -- SPD matrix
+    U, S -- Nystrom approximation of H
+    r -- righthandside residual (for our task it is A.T@y)
+    x0 -- starting point for solution
+    ro -- stepsize
+    s -- sketch size
+    epsilon -- shift
+
+    returns:
+    x -- solution
+    """
+
     I = np.eye(H.shape[0])
     w0 = r - (H + ro * I) @ x0
 
@@ -135,16 +171,20 @@ def nystrom_pcg(H, U, S, r, x0, ro=0.01, s=50, epsilon=0.05):
 
 
 
-def NysADMM(A, y, A_test=None, y_test=None, MAX_ITER = 100_000):
+def NysADMM(A, y, A_test=None, y_test=None, MAX_ITER=1_000):
+    """
+    Calculates Nystrom ADMM
+    Parameters and outputs are the same as for ADMM function
+    """
     lossses = []
-    m, n = A.shape
-    w, v = np.linalg.eig(A.T.dot(A))
+    _, n = A.shape
+    w, _ = np.linalg.eig(A.T.dot(A))
     
     xhat = np.zeros([n, 1])
     zhat = np.zeros([n, 1])
     u = np.zeros([n, 1])
 
-    l = sqrt(2*log(n, 10))
+    l = np.sqrt(2*np.log10(n))
     rho = 1/(np.amax(np.absolute(w)))
 
     AtA = A.T.dot(A)
@@ -163,7 +203,6 @@ def NysADMM(A, y, A_test=None, y_test=None, MAX_ITER = 100_000):
         xhat = nystrom_pcg(Q.copy(), U, S, r, rho*(zhat - u), ro=rho, s=50, epsilon=0.1)
 
         zhat = Sthresh(xhat + u, l/rho)
-
 
         u += xhat - zhat
 
